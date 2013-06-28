@@ -28,18 +28,24 @@
 #define CONTINUOUS 3
 #define FINDLIMITS 4
 
+// Hold time for start button to switch modes
+#define MODE_SWITCH_DELAY 2000
+#define DEBOUNCE_DELAY 150
+
 // The stepper motor object
 AF_Stepper motor1(200, 1);
 
-boolean is_enabled = true;
-int single_step = 6;
-float movement_speed = 100.0f;
-int last_speed_read = 0;
-int dir = 1;                         // Direction (1 or -1)
-unsigned long delay_time = 15000;    // Delay between steps when in timelapse mode
 
 // Timelapse timer
 Timer timer;
+
+boolean is_enabled = true;           // Movement is enabled
+boolean use_accel = true;            // Use smooth acceleration
+int single_step = 6;
+float movement_speed = 100.0;
+int last_speed_read = 0;
+int dir = 1;                         // Direction (1 or -1)
+unsigned long delay_time = 15000;    // Delay between steps when in timelapse mode
 
 int high_bounds = 500;
 int speed_mod = 2;
@@ -49,7 +55,6 @@ int step_mode = INTERLEAVE;          // Stepper mode: SINGLE, DOUBLE, INTERLEAVE
 
 unsigned long last_print_time = millis();
 unsigned long last_btn_time = 0;
-unsigned long debounce_delay = 50;
 int last_btn_state = HIGH;
 
 
@@ -82,6 +87,35 @@ void setup()
 
 void loop()
 {  
+  
+  //CheckSerial();
+  CheckInputs();
+  CheckLimitHit();
+  
+  if (state == CONTINUOUS) {
+    if (use_accel)
+      stepper.run();
+    else //if (stepper.speed() != 0)
+      stepper.runSpeed();
+  } else {
+    if (state == TIMELAPSE)
+      // If we're in timelapse mode, check if a movement is due
+      timer.update();
+      
+    if (stepper.distanceToGo() == 0) {
+      //MoveForPhoto();
+      //run_count++;
+      if (is_enabled)
+        Release();
+    } else {
+      if (!is_enabled)
+        EnableOutput();
+      stepper.run();
+    }
+  }
+}
+
+void CheckSerial() {
   // Check for serial input
   char c;
   if (Serial.available()) {
@@ -128,39 +162,13 @@ void loop()
       // Cycle step types
       // Micro step is very slow...
       // Interleave seems like a good balance
-      
-      step_mode = step_mode % 4 + 1;
-      p("Step mode: %i\n", step_mode);
+      CycleModes();
     }
     else if (c == 'R') {
       Release(); 
     }
   }
-  
-  CheckInputs();
-  CheckLimitHit();
-  
-  if (state == CONTINUOUS) {
-    if (stepper.speed() != 0)
-      stepper.run();
-  } else {
-    if (state == TIMELAPSE)
-      // If we're in timelapse mode, check if a movement is due
-      timer.update();
-      
-    if (stepper.distanceToGo() == 0) {
-      //MoveForPhoto();
-      //run_count++;
-      if (is_enabled)
-        Release();
-    } else {
-      if (!is_enabled)
-        EnableOutput();
-      stepper.run();
-    }
-  }
 }
-
 
 void CheckInputs() {
    int input_speed = analogRead(SPEED_POT_PIN);
@@ -180,8 +188,9 @@ void CheckInputs() {
      }
    }
    
+   // Start button is pressed
    if (digitalRead(START_BTN_PIN) == LOW) {
-     if (last_btn_state == HIGH && millis() - last_btn_time > debounce_delay) {
+     if (last_btn_state == HIGH && millis() - last_btn_time > DEBOUNCE_DELAY) {
        last_btn_time = millis();
        last_btn_state = LOW;
        
@@ -189,7 +198,13 @@ void CheckInputs() {
          Stop();
        else
          StartMoving();
+     } else if (last_btn_state == LOW && millis() - last_btn_time > MODE_SWITCH_DELAY) {
+       // Button has been held down for a while, let's perform a secondary function: switch stepper modes
+       last_btn_time = millis();
+       CycleModes(); 
      }
+       
+     
    } else {
      // Button HIGH 
      last_btn_state = HIGH;
@@ -212,7 +227,7 @@ void CheckLimitHit() {
     dir = -1;
     high_bounds = stepper.currentPosition();
     stepper.setSpeed(abs(stepper.speed())*-1);
-    stepper.move(high_bounds-1); 
+    stepper.move(-1); 
     //stepper.move(single_step*dir);
     //MoveForPhoto();
     //Serial.print("Limit after: " + run_count);
@@ -233,6 +248,11 @@ void CheckLimitHit() {
   if (state == FINDLIMITS) {
     state = NORMAL;
   }
+}
+
+void CycleModes() {
+  step_mode = step_mode % 4 + 1;
+  p("Step mode: %i\n", step_mode);
 }
 
 float ConvertAnalogReadingToSpeed(int reading) {

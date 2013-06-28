@@ -27,22 +27,29 @@ boolean IsMoving() {
 }
 
 void Reverse() {
-  stepper.setSpeed(stepper.speed()*-1);
-
+  SetDirection(dir * -1);
+  if (state == FINDLIMITS) {
+    GoToLimit();
+  }
+  
   #ifdef DEBUG_ON
   Serial.print("Reversing: ");
   Serial.println(stepper.speed());
   #endif
-  dir = dir * -1;
-  if (state == FINDLIMITS) {
-    GoToLimit();
-  }
 }
 
 void SetDirection(int new_dir) {
   if (new_dir != dir) {
     dir = new_dir;
-    stepper.setSpeed(stepper.speed()*-1);
+    
+    if (use_accel) {
+      stepper.setMaxSpeed(movement_speed);
+      stepper.setAcceleration(1950.0);
+      // Reverse our target position
+      if (IsMoving())
+        stepper.moveTo(stepper.distanceToGo() * -1);
+    } else
+      stepper.setSpeed(movement_speed*dir);
     
     #ifdef DEBUG_ON
     Serial.print("Switching direction\n");
@@ -54,7 +61,11 @@ void SetMovementSpeed(float new_speed) {
   if (new_speed != movement_speed) {
     movement_speed = new_speed;
     
-    stepper.setSpeed(movement_speed*dir);
+    if (use_accel) {
+      stepper.setMaxSpeed(movement_speed);
+      stepper.setAcceleration(450.0);
+    } else
+      stepper.setSpeed(movement_speed*dir);
     
     #ifdef DEBUG_ON
     //Serial.print(movement_speed*dir);
@@ -82,9 +93,9 @@ void GoToLimit() {
 }
 
 void MoveForPhoto() {
-#ifdef DEBUG_ON
-  //Serial.println("move one step");
-#endif
+  #ifdef DEBUG_ON
+  Serial.println("move one step");
+  #endif
   stepper.setSpeed(movement_speed*dir);
   //stepper.setAcceleration(3.5);
   stepper.move(single_step*dir);
@@ -95,9 +106,10 @@ void StartMoving() {
   Serial.println("Start Moving");
   #endif
   // Enable the stepper
-  EnableOutput();
-  stepper.moveTo(19000*dir);
+  //EnableOutput();
+  
   SetMovementSpeed(movement_speed);
+  stepper.moveTo(20000*dir);
 }
 
 void Stop() {
@@ -107,8 +119,8 @@ void Stop() {
   
   stepper.moveTo(stepper.currentPosition());
   //stepper.stop();
-  SetMovementSpeed(0.0);
+  //SetMovementSpeed(0.0);
   
   // Disable the stepper to save energy
-  Release();
+  //Release();
 }
