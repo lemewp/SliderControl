@@ -1,17 +1,26 @@
-// ConstantSpeed.pde
+// SliderControl
 // -*- mode: C++ -*-
 //
-// Shows how to run AccelStepper in the simplest,
-// fixed speed mode with no accelerations
-// Requires the AFMotor library (https://github.com/adafruit/Adafruit-Motor-Shield-library)
-// And AccelStepper with AFMotor support (https://github.com/adafruit/AccelStepper)
-// Public domain!
+// Basic control of a stepper based slider.
+// Uses the AccelStepper and AFMotor libraries for communication.
+// Can be controlled by serial or via sensors.
+// Includes support for limit switches to prevent overstepping.
+
 #include <Timer.h>
 #include <AccelStepper.h>
 #include <AFMotor.h>
-#define LIMIT_F_PIN A1
-#define LIMIT_B_PIN A0
+#include <stdarg.h>
+
+// Print debug strings via serial
 #define DEBUG_ON 1
+
+// Limit switch pins (forward and backwards):
+#define LIMIT_F_PIN A0
+#define LIMIT_B_PIN A1
+
+#define SPEED_POT_PIN A2
+#define DIRECTION_SWITCH_PIN A3
+#define START_BTN_PIN A4
 
 // States:
 #define NORMAL 1
@@ -19,33 +28,41 @@
 #define CONTINUOUS 3
 #define FINDLIMITS 4
 
+// The stepper motor object
 AF_Stepper motor1(200, 1);
-
-
 
 boolean is_enabled = true;
 int single_step = 6;
-int movement_speed = 100;
-int dir = 1;
-unsigned long delay_time = 15000;
+float movement_speed = 100.0f;
+int last_speed_read = 0;
+int dir = 1;                         // Direction (1 or -1)
+unsigned long delay_time = 15000;    // Delay between steps when in timelapse mode
 
+// Timelapse timer
 Timer timer;
 
-int bounds = 500;
+int high_bounds = 500;
 int speed_mod = 2;
 int run_count = 0;
 int state = TIMELAPSE;
-int step_mode = INTERLEAVE;
+int step_mode = INTERLEAVE;          // Stepper mode: SINGLE, DOUBLE, INTERLEAVE, or MICROSTEP
 
-// you can change these to DOUBLE or INTERLEAVE or MICROSTEP!
-void forwardstep() {  
-  motor1.onestep(FORWARD, step_mode);
-}
-void backwardstep() {  
-  motor1.onestep(BACKWARD, step_mode);
+unsigned long last_print_time = millis();
+unsigned long last_btn_time = 0;
+unsigned long debounce_delay = 50;
+int last_btn_state = HIGH;
+
+
+void p(char *fmt, ... ){
+        char tmp[128]; // resulting string limited to 128 chars
+        va_list args;
+        va_start (args, fmt );
+        vsnprintf(tmp, 128, fmt, args);
+        va_end (args);
+        Serial.print(tmp);
 }
 
-AccelStepper stepper(forwardstep, backwardstep); // use functions to step
+AccelStepper stepper(ForwardStep, BackwardStep); // use functions to step
 
 void setup()
 {  
@@ -54,10 +71,13 @@ void setup()
   
   pinMode(LIMIT_F_PIN, INPUT_PULLUP);
   pinMode(LIMIT_B_PIN, INPUT_PULLUP);
-
+  pinMode(START_BTN_PIN, INPUT_PULLUP);
+  pinMode(DIRECTION_SWITCH_PIN, INPUT_PULLUP);
+  pinMode(13, OUTPUT);
+  
   stepper.setSpeed(0);
   
-  int moveEvent = timer.every(delay_time, MoveForPhoto);
+  //int moveEvent = timer.every(delay_time, MoveForPhoto);
 }
 
 void loop()
@@ -104,21 +124,30 @@ void loop()
     else if (c == 'e') {
       FindLimits();
     }
+    else if (c == 't') {
+      // Cycle step types
+      // Micro step is very slow...
+      // Interleave seems like a good balance
+      
+      step_mode = step_mode % 4 + 1;
+      p("Step mode: %i\n", step_mode);
+    }
     else if (c == 'R') {
       Release(); 
     }
-
   }
-
+  
+  CheckInputs();
   CheckLimitHit();
-  timer.update();
   
   if (state == CONTINUOUS) {
     if (stepper.speed() != 0)
-      stepper.runSpeed();
+      stepper.run();
   } else {
-    
-    
+    if (state == TIMELAPSE)
+      // If we're in timelapse mode, check if a movement is due
+      timer.update();
+      
     if (stepper.distanceToGo() == 0) {
       //MoveForPhoto();
       //run_count++;
@@ -132,94 +161,83 @@ void loop()
   }
 }
 
-void Release() {
-  is_enabled = false;
-  motor1.release();
-  //stepper.disableOutputs();
+
+void CheckInputs() {
+   int input_speed = analogRead(SPEED_POT_PIN);
+   
+   if (last_speed_read + 1 < input_speed  || last_speed_read - 1 > input_speed ) {
+     
+     SetMovementSpeed(ConvertAnalogReadingToSpeed(input_speed));
+     last_speed_read = input_speed;
+     
+     if ((millis() - last_print_time) > 2000 && input_speed > 1) {
+       Serial.print("Input speed: ");
+       Serial.print(input_speed);
+       Serial.print("\n");
+       //if (digitalRead(DIRECTION_SWITCH_PIN) == LOW)
+         //Serial.print("Switch open");       
+       last_print_time = millis();
+     }
+   }
+   
+   if (digitalRead(START_BTN_PIN) == LOW) {
+     if (last_btn_state == HIGH && millis() - last_btn_time > debounce_delay) {
+       last_btn_time = millis();
+       last_btn_state = LOW;
+       
+       if (IsMoving())
+         Stop();
+       else
+         StartMoving();
+     }
+   } else {
+     // Button HIGH 
+     last_btn_state = HIGH;
+   }
+   
+   if (digitalRead(DIRECTION_SWITCH_PIN) == LOW)
+       SetDirection(1);
+   else
+       SetDirection(-1);
 }
 
-void EnableOutput() {
-  is_enabled = true;
-  stepper.enableOutputs();
-}
-
-void Reverse() {
-  stepper.setSpeed(stepper.speed()*-1);
-
-#ifdef DEBUG_ON
-  Serial.print("Reversing: ");
-  Serial.println(stepper.speed());
-#endif
-  dir = dir * -1;
-  if (state == FINDLIMITS) {
-    GoToLimit();
-  }
-}
-
-void Stop() {
-#ifdef DEBUG_ON
-  Serial.println("stop");
-#endif
-  //stepper.stop();
-  stepper.moveTo(stepper.currentPosition());
-  stepper.setSpeed(0);
-  //motor.run(RELEASE); 
-}
-
-int CheckLimitHit() {
+void CheckLimitHit() {
   //int limitVal = digitalRead(LIMIT_F_PIN);
   if (digitalRead(LIMIT_F_PIN) == 0) {
     //Stop();
     // Forward limit hit
 #ifdef DEBUG_ON
-    //Serial.print("Forward limit hit");
+    Serial.print("Forward limit hit");
 #endif
     dir = -1;
-    //stepper.setSpeed(abs(stepper.speed())*-1);
+    high_bounds = stepper.currentPosition();
+    stepper.setSpeed(abs(stepper.speed())*-1);
+    stepper.move(high_bounds-1); 
     //stepper.move(single_step*dir);
-    MoveForPhoto();
+    //MoveForPhoto();
     //Serial.print("Limit after: " + run_count);
   } 
   else if (digitalRead(LIMIT_B_PIN) == 0) {
     //Stop();
 #ifdef DEBUG_ON
-    //Serial.print("Back limit hit");
+    Serial.print("Back limit hit");
 #endif
     dir = 1;
-    //stepper.setSpeed(abs(stepper.speed()));
+    stepper.setSpeed(abs(stepper.speed()));
     stepper.setCurrentPosition(0);
-    MoveForPhoto();
-    //stepper.move(1); 
+    //MoveForPhoto();
+    stepper.move(1); 
     Serial.print(run_count);
   }
   
   if (state == FINDLIMITS) {
     state = NORMAL;
   }
-  
 }
 
-void FindLimits() {
-#ifdef DEBUG_ON
-  Serial.print("Find limit");
-#endif
-  state = FINDLIMITS;
-  stepper.setSpeed(movement_speed*dir);
-  //stepper.setAcceleration(10.5);
-  stepper.moveTo(9000*dir);
+float ConvertAnalogReadingToSpeed(int reading) {
+    // Takes a raw pot value and returns a usable speed
+    return float(reading * 0.98);
 }
 
-void GoToLimit() {
-   // Goes to the limit of the current direction
-  stepper.moveTo(9000*dir);
-}
-
-void MoveForPhoto() {
-#ifdef DEBUG_ON
-  //Serial.println("move one step");
-#endif
-  stepper.setSpeed(movement_speed*dir);
-  //stepper.setAcceleration(3.5);
-  stepper.move(single_step*dir);
-}
 
