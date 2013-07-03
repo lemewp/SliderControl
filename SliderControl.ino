@@ -17,7 +17,6 @@
 // Limit switch pins (forward and backwards):
 #define LIMIT_F_PIN A0
 #define LIMIT_B_PIN A1
-
 #define SPEED_POT_PIN A2
 #define DIRECTION_SWITCH_PIN A3
 #define START_BTN_PIN A4
@@ -31,6 +30,7 @@
 // Hold time for start button to switch modes
 #define MODE_SWITCH_DELAY 2000
 #define DEBOUNCE_DELAY 150
+#define SPEED_MOD 2            // Step size adjustment for time lapse
 
 // The stepper motor object
 AF_Stepper motor1(200, 1);
@@ -48,9 +48,8 @@ int dir = 1;                         // Direction (1 or -1)
 unsigned long delay_time = 15000;    // Delay between steps when in timelapse mode
 
 int high_bounds = 500;
-int speed_mod = 2;
 int run_count = 0;
-int state = TIMELAPSE;
+int state = CONTINUOUS;
 int step_mode = INTERLEAVE;          // Stepper mode: SINGLE, DOUBLE, INTERLEAVE, or MICROSTEP
 
 unsigned long last_print_time = millis();
@@ -78,41 +77,46 @@ void setup()
   pinMode(LIMIT_B_PIN, INPUT_PULLUP);
   pinMode(START_BTN_PIN, INPUT_PULLUP);
   pinMode(DIRECTION_SWITCH_PIN, INPUT_PULLUP);
-  pinMode(13, OUTPUT);
   
   stepper.setSpeed(0);
   
-  //int moveEvent = timer.every(delay_time, MoveForPhoto);
+  if (state == TIMELAPSE)
+    int moveEvent = timer.every(delay_time, MoveForPhoto);
 }
 
 void loop()
 {  
-  
-  //CheckSerial();
-  CheckInputs();
-  CheckLimitHit();
-  
-  if (state == CONTINUOUS) {
-    if (use_accel)
-      stepper.run();
-    else //if (stepper.speed() != 0)
-      stepper.runSpeed();
-  } else {
-    if (state == TIMELAPSE)
-      // If we're in timelapse mode, check if a movement is due
-      timer.update();
-      
-    if (stepper.distanceToGo() == 0) {
-      //MoveForPhoto();
-      //run_count++;
-      if (is_enabled)
-        Release();
+  do {
+    CheckSerial();
+    CheckInputs();
+    CheckLimitHit();
+    
+    if (state == CONTINUOUS) {
+      if (stepper.speed() != 0) {
+        if (use_accel) {
+        //  while (digitalRead(START_BTN_PIN) == LOW)
+            stepper.run();
+        }
+        else //if (stepper.speed() != 0)
+          stepper.runSpeed();
+      }
     } else {
-      if (!is_enabled)
-        EnableOutput();
-      stepper.run();
+      if (state == TIMELAPSE)
+        // If we're in timelapse mode, check if a movement is due
+        timer.update();
+        
+      if (stepper.distanceToGo() == 0) {
+        //MoveForPhoto();
+        //run_count++;
+        if (is_enabled)
+          Release();
+      } else {
+        if (!is_enabled)
+          EnableOutput();
+        stepper.run();
+      }
     }
-  }
+  } while (stepper.distanceToGo() != 0);
 }
 
 void CheckSerial() {
@@ -144,7 +148,7 @@ void CheckSerial() {
     } 
     else if ((c >= '0') && (c <= '9')) {
       int speed = (c-'0')*50;
-      single_step = int(c-'0')*speed_mod;
+      single_step = int(c-'0')*SPEED_MOD;
 #ifdef DEBUG_ON
       Serial.print("setting speed: ");
       Serial.println(speed);
@@ -178,19 +182,24 @@ void CheckInputs() {
      SetMovementSpeed(ConvertAnalogReadingToSpeed(input_speed));
      last_speed_read = input_speed;
      
+     #ifdef DEBUG_ON
      if ((millis() - last_print_time) > 2000 && input_speed > 1) {
+       
        Serial.print("Input speed: ");
        Serial.print(input_speed);
        Serial.print("\n");
+       
        //if (digitalRead(DIRECTION_SWITCH_PIN) == LOW)
          //Serial.print("Switch open");       
        last_print_time = millis();
      }
+     #endif
    }
    
    // Start button is pressed
    if (digitalRead(START_BTN_PIN) == LOW) {
      if (last_btn_state == HIGH && millis() - last_btn_time > DEBOUNCE_DELAY) {
+       // If this is the first time we're noticing the button press and it's been more than the debounce delay...
        last_btn_time = millis();
        last_btn_state = LOW;
        
@@ -203,15 +212,15 @@ void CheckInputs() {
        last_btn_time = millis();
        CycleModes(); 
      }
-       
-     
    } else {
      // Button HIGH 
      last_btn_state = HIGH;
    }
    
-   if (digitalRead(DIRECTION_SWITCH_PIN) == LOW)
+   // Direction switch
+   if (digitalRead(DIRECTION_SWITCH_PIN) == LOW) {
        SetDirection(1);
+   }
    else
        SetDirection(-1);
 }
@@ -227,20 +236,15 @@ void CheckLimitHit() {
     dir = -1;
     high_bounds = stepper.currentPosition();
     stepper.setSpeed(abs(stepper.speed())*-1);
-    stepper.move(-1); 
-    //stepper.move(single_step*dir);
-    //MoveForPhoto();
-    //Serial.print("Limit after: " + run_count);
+    stepper.move(-1);
   } 
   else if (digitalRead(LIMIT_B_PIN) == 0) {
-    //Stop();
 #ifdef DEBUG_ON
     Serial.print("Back limit hit");
 #endif
     dir = 1;
     stepper.setSpeed(abs(stepper.speed()));
     stepper.setCurrentPosition(0);
-    //MoveForPhoto();
     stepper.move(1); 
     Serial.print(run_count);
   }
@@ -256,8 +260,8 @@ void CycleModes() {
 }
 
 float ConvertAnalogReadingToSpeed(int reading) {
-    // Takes a raw pot value and returns a usable speed
-    return float(reading * 0.98);
+  // Takes a raw pot value and returns a usable speed
+  return float(reading * 0.80);
 }
 
 

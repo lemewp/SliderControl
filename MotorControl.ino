@@ -1,4 +1,5 @@
 
+// Used for AccelStepper's movement...
 void ForwardStep() {  
   motor1.onestep(FORWARD, step_mode);
 }
@@ -6,7 +7,6 @@ void ForwardStep() {
 void BackwardStep() {  
   motor1.onestep(BACKWARD, step_mode);
 }
-
 
 void Release() {
   is_enabled = false;
@@ -47,7 +47,7 @@ void SetDirection(int new_dir) {
       stepper.setAcceleration(1950.0);
       // Reverse our target position
       if (IsMoving())
-        stepper.moveTo(stepper.distanceToGo() * -1);
+        stepper.moveTo(20000 * dir);
     } else
       stepper.setSpeed(movement_speed*dir);
     
@@ -122,5 +122,6 @@ void Stop() {
   //SetMovementSpeed(0.0);
   
   // Disable the stepper to save energy
+  motor1.release();
   //Release();
 }
